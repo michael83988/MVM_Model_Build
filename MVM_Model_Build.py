@@ -183,7 +183,7 @@ input_dim= len(df_vil_train.columns)-1
 output_dim=1
 learning_rate=1e-3
 epochs=5
-batch_size=64
+batch_size=600
 
 
 # DataLoader prepare
@@ -255,7 +255,7 @@ def train_loop(dataloader, model, loss_fn, optimizer):
         optimizer.step()
         optimizer.zero_grad()
 
-        if batch%10==0:
+        if True:  #batch%10==0:
             loss, current=loss.item(), (batch+1)*len(X)
             print(f"loss: {loss:>7f}, [{current:>5d}/{size:>5d}]")
 
@@ -288,8 +288,10 @@ print("Done")
 # Result
 # Simple Linear Regression Model: loss值都是nan! (batch size=10) Why? Underdetermined system?
 # Reference: https://www.collimator.ai/reference-guides/what-is-an-underdetermined-system
-
-
+# Chatgpt advice:
+# A NaN loss value in PyTorch linear regression model training can be caused by several reasons. One of the most common reasons is that the values in the dataset are too large or too small. This can cause the gradients to become too large or too small, which can lead to numerical instability and NaN values.
+# To fix this issue, you can try normalizing the input data. You can do this by subtracting the mean and dividing by the standard deviation of the input data. Here is an example of how you can normalize the input data:
+# Another reason for NaN loss values could be due to the batch size not matching the total number of inputs. You can use a batch size that is a factor of the total number of inputs. If you cannot use a batch size that is a factor of the total number of inputs, you can use the drop_last parameter in the DataLoader class to drop the last batch if it is smaller than the specified batch size.
 
 
 
