@@ -93,15 +93,15 @@ df_vil=df_vil.reset_index(names=df_vil.index.names)
 # df_test_violation=df_vil["violation"]
 # print(df_vil.info())
 
-callback_feature=[i for i in df_concat.columns if i not in ["need_call_back"]]
-df_callback=df_concat.groupby(callback_feature).sum()
-df_callback=df_callback.reset_index(names=df_callback.index.names)
+# callback_feature=[i for i in df_concat.columns if i not in ["need_call_back"]]
+# df_callback=df_concat.groupby(callback_feature).sum()
+# df_callback=df_callback.reset_index(names=df_callback.index.names)
 # print(df_callback.info())
 
 
 
 # 隨機抽樣，當作測試集。剩下的當作訓練集
-# 違規訓練集
+# 違規訓練與測試集
 df_vil_test=df_vil.sample(frac=0.2,random_state=1)  # 用1當作random seed, for result's reproducibility
 df_vil_train=df_vil.drop(index=df_vil_test.index, axis=0)
 df_vil_test=df_vil_test.reset_index(drop=True)
@@ -110,13 +110,15 @@ df_vil_train=df_vil_train.reset_index(drop=True)
 # print(f"df_vil_test.info(): {df_vil_test.info()}")
 
 
-# 通知臨檢訓練集
-df_callback_test=df_callback.sample(frac=0.2,random_state=1)  # 用1當作random seed, for result's reproducibility
-df_callback_train=df_callback.drop(index=df_callback_test.index)
+# 通知臨檢訓練與測試集
+# df_callback_test=df_callback.sample(frac=0.2,random_state=1)  # 用1當作random seed, for result's reproducibility
+# df_callback_train=df_callback.drop(index=df_callback_test.index, axis=0)
+# df_callback_test.reset_index(drop=True)
+# df_callback_train.reset_index(drop=True)
 print("Data processing finished.")
 
 
-print(f"??: {df_vil_train.loc[7,'violation']}")
+# print(f"??: {df_vil_train.loc[7,'violation']}")
 # print(f"df_callback_test.info(): {df_callback_test.info()}")
 
 #======================DATA PREPROCESSING FINISHED======================
@@ -133,21 +135,22 @@ from torch.utils.data import DataLoader
 
 # 違規預測
 # 資料集包裝成DataLoader
-
+# Custom dataset
 def label_to_tensor(val):
-    return torch.tensor(val)  #.float()
+    return torch.tensor(val).float()
 
 def feature_to_tensor(df:pd.DataFrame):
     return torch.from_numpy(df.to_numpy()).float()
 
-class VilDataset(Dataset):
-    def __init__(self, data:pd.DataFrame, transform=None, target_transform=None):
+class MVMDataset(Dataset):
+    def __init__(self, data:pd.DataFrame, label_column, transform=None, target_transform=None):
         self.data=data.astype(float)
+        self.label_column=label_column
 
         # Normalize of each columns except the label column (violation in this case)
         # Make every features to have enough impact on the final result
         for column in self.data.columns:
-            if column != "violation":
+            if column != label_column:
                 # Apply min-max scaling
                 self.data[column]=(self.data[column]-self.data[column].min())/(self.data[column].max()-self.data[column].min())
 
@@ -155,11 +158,11 @@ class VilDataset(Dataset):
         self.target_transform=target_transform
 
     def __len__(self):
-        return len(self.data.index)
+        return len(self.data)
 
     def __getitem__(self, index):
-        label=self.data.loc[index, "violation"]
-        features=self.data.loc[index, self.data.columns != "violation"]
+        label=self.data.loc[index, self.label_column]
+        features=self.data.loc[index, self.data.columns != self.label_column]
 
         if self.transform:
             features=self.transform(features)
@@ -171,24 +174,120 @@ class VilDataset(Dataset):
 
 
 
-print("VilDataset completed.")
-vil_training_dataset=VilDataset(df_vil_train,transform= feature_to_tensor, target_transform=label_to_tensor)
-vil_training_dataloader=DataLoader(vil_training_dataset, batch_size=20)
+print("MVMDataset definition completed.")
+
+
+# Define hyperparameter for model training
+device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+input_dim= len(df_vil_train.columns)-1
+output_dim=1
+learning_rate=1e-3
+epochs=5
+batch_size=64
+
+
+# DataLoader prepare
+vil_training_dataset=MVMDataset(df_vil_train,label_column="violation", transform= feature_to_tensor, target_transform=label_to_tensor)
+vil_training_dataloader=DataLoader(vil_training_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
+vil_test_dataset=MVMDataset(df_vil_test, "violation", feature_to_tensor, label_to_tensor)
+vil_test_dataloader=DataLoader(vil_test_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
 
 # for idx, (features, violation) in enumerate(vil_training_dataset):
 #     print(f"idx: {idx}, features: {features}, violation: {violation}")
 
 
+# Test OK
 test_feature, test_num=next(iter(vil_training_dataloader))
-print(f"Vil features: {test_feature}")
-print(f"Vil number: {test_num}")
+print(f"Vil features: {len(test_feature)}")
+print(f"Vil number: {len(test_num)}")
+
+
+
+# Model definition
+from torch import nn
+
+# 1. Simple Linear Model
+class LinearRegression(nn.Module):
+    def __init__(self, input_dim, output_dim):
+        super().__init__()
+        self.linear=nn.Linear(input_dim, output_dim)
+
+
+    def forward(self, x):
+        # print(f"weight shape: {self.linear.weight.shape}")
+        # print(f"bias shape: {self.linear.bias.shape}")
+        output=self.linear(x)
+        return output
 
 
 
 
 
+# Initialize model
+modelLinearRegression=LinearRegression(input_dim, output_dim)
+
+# Initialize loss function
+criterion=nn.MSELoss()
+
+# Initialize optimizer
+optimizer=torch.optim.SGD(modelLinearRegression.parameters(), lr=learning_rate)
 
 
+# Define train loop and test loop methods
+def train_loop(dataloader, model, loss_fn, optimizer):
+    size=len(dataloader.dataset)
+
+    # Set model to training mode
+    model.train()
+    for batch, (X,y) in enumerate(dataloader):
+        # print(len(X))
+        pred=model(X)
+        # for i in range(len(y)):
+        #     print(f"pred[{i}]: {pred[i]}, y[{i}]: {y[i]}")
+        # print(f"pred.dtype: {pred.dtype}")
+        # print(f"y.dtype: {y.dtype}")
+        loss=loss_fn(pred, y)
+        # print(f"loss.dtype: {loss.dtype}")
+
+
+        # Back propagation
+        loss.backward()
+        optimizer.step()
+        optimizer.zero_grad()
+
+        if batch%10==0:
+            loss, current=loss.item(), (batch+1)*len(X)
+            print(f"loss: {loss:>7f}, [{current:>5d}/{size:>5d}]")
+
+
+def test_loop(dataloader, model, loss_fn):
+    model.eval()
+    # size=len(dataloader.dataset)
+    num_batches=len(dataloader)
+    test_loss=0
+
+
+    with torch.no_grad():
+        for X,y in dataloader:
+            pred=model(X)
+            test_loss+=loss_fn(pred, y).item()
+
+    test_loss/=num_batches
+    print(f"Avg loss: {test_loss:>8f}")
+
+
+
+# Start training model
+for t in range(epochs):
+    print(f"Epoch {t+1}\n--------------------------------")
+    train_loop(vil_training_dataloader, modelLinearRegression, criterion, optimizer)
+    test_loop(vil_test_dataloader, modelLinearRegression, criterion)
+
+print("Done")
+    
+# Result
+# Simple Linear Regression Model: loss值都是nan! (batch size=10) Why? Underdetermined system?
+# Reference: https://www.collimator.ai/reference-guides/what-is-an-underdetermined-system
 
 
 
