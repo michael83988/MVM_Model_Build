@@ -15,7 +15,9 @@
 
 # Data cleaning
 import pandas as pd
-
+import os
+from datetime import datetime
+import csv
 
 df_raw=pd.read_excel("113年自行研究計畫案_挑檔_raw.xlsx",sheet_name="raw")
 # print(df_raw.info())
@@ -35,7 +37,7 @@ df_drop=df_raw.drop(["plate_no_main","exam_location_description","exam_staff_id"
 # print(df_drop.info())
 
 
-# 路稽時間轉換
+# 路稽時間轉換(排班的時間)
 df_drop["exam_schedule_begin_time"]=pd.to_datetime(df_drop["exam_schedule_begin_time"], errors="coerce", format=f"%Y-%m-%d %H:%M:%S")
 df_drop["exam_schedule_begin_year"]=df_drop["exam_schedule_begin_time"].dt.year
 df_drop["exam_schedule_begin_month"]=df_drop["exam_schedule_begin_time"].dt.month
@@ -83,7 +85,7 @@ df_concat=pd.concat([df_drop.drop(features_to_change, axis=1), df_dummies], axis
 vil_groupby_feature=[i for i in df_concat.columns if i not in ["violation"]] 
 # print(len(vil_groupby_feature))
 df_vil=df_concat.groupby(vil_groupby_feature).sum()  #用來作為違規數預測模型
-df_vil=df_vil.reset_index(names=df_vil.index.names)
+df_vil=df_vil.reset_index(names=df_vil.index.names)  # MultiIndex轉成columns
 # print(df_vil.index)
 # df_vil=pd.concat([df_vil.index.to_frame(),df_vil["violation"]], axis=1)
 
@@ -106,6 +108,18 @@ df_vil_test=df_vil.sample(frac=0.2,random_state=1)  # 用1當作random seed, for
 df_vil_train=df_vil.drop(index=df_vil_test.index, axis=0)
 df_vil_test=df_vil_test.reset_index(drop=True)
 df_vil_train=df_vil_train.reset_index(drop=True)
+
+
+
+# Check dataframe has nan
+# train_nan_num=df_vil_train.isna().sum().sum()
+# print(f"train dataframe nan #: {train_nan_num}")
+
+# df_vil_test=df_vil.sample(frac=0.2,random_state=1)  # 用1當作random seed, for result's reproducibility
+# test_nan_num=df_vil_test.isna().sum().sum()
+# print(f"test dataframe nan #: {test_nan_num}")
+
+
 # print(df_vil_test.dtypes)
 # print(f"df_vil_test.info(): {df_vil_test.info()}")
 
@@ -136,26 +150,46 @@ from torch.utils.data import DataLoader
 # 違規預測
 # 資料集包裝成DataLoader
 # Custom dataset
+device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+
 def label_to_tensor(val):
-    return torch.tensor(val).float()
+    return torch.tensor(val).float().to(device)
 
 def feature_to_tensor(df:pd.DataFrame):
-    return torch.from_numpy(df.to_numpy()).float()
+    return torch.from_numpy(df.to_numpy()).float().to(device)
 
 class MVMDataset(Dataset):
     def __init__(self, data:pd.DataFrame, label_column, transform=None, target_transform=None):
+        # Befor type changing
+        # nan_num=data.isna().sum().sum()
+        # print(f"Befor type changing nan #: {nan_num}")
+
         self.data=data.astype(float)
         self.label_column=label_column
 
+        # nan_num=data.isna().sum().sum()
+        # print(f"After type changing nan #: {nan_num}")
+
         # Normalize of each columns except the label column (violation in this case)
         # Make every features to have enough impact on the final result
-        for column in self.data.columns:
-            if column != label_column:
-                # Apply min-max scaling
-                self.data[column]=(self.data[column]-self.data[column].min())/(self.data[column].max()-self.data[column].min())
+        # This approach makes data contain lots of nan value!! -> Need modify
+        # for column in self.data.columns:
+        #     if column != label_column:
+        #         # Apply min-max scaling -> 怪怪的? 會很依靠輸入批次的資料的均勻程度
+        #         if (self.data[column].max()-self.data[column].min()) != 0:
+        #             self.data[column]=(self.data[column]-self.data[column].min())/(self.data[column].max()-self.data[column].min())
+        #         else:
+        #             self.data[column]=1
+                    
 
         self.transform=transform
         self.target_transform=target_transform
+
+
+        # Check tensor has
+        # nan_count=torch.isnan(torch.from_numpy(self.data.to_numpy())).sum()
+        # print(f"Check self.data nan count: {nan_count}")
+
 
     def __len__(self):
         return len(self.data)
@@ -178,33 +212,33 @@ print("MVMDataset definition completed.")
 
 
 # Define hyperparameter for model training
-device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
 input_dim= len(df_vil_train.columns)-1
 output_dim=1
 learning_rate=1e-3
-epochs=5
-batch_size=600
+epochs=2
+batch_size=60
 
 
 # DataLoader prepare
 vil_training_dataset=MVMDataset(df_vil_train,label_column="violation", transform= feature_to_tensor, target_transform=label_to_tensor)
 vil_training_dataloader=DataLoader(vil_training_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
 vil_test_dataset=MVMDataset(df_vil_test, "violation", feature_to_tensor, label_to_tensor)
-vil_test_dataloader=DataLoader(vil_test_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
+vil_test_dataloader=DataLoader(vil_test_dataset, batch_size=len(df_vil_test), drop_last=True, shuffle=True)
 
 # for idx, (features, violation) in enumerate(vil_training_dataset):
 #     print(f"idx: {idx}, features: {features}, violation: {violation}")
 
 
 # Test OK
-test_feature, test_num=next(iter(vil_training_dataloader))
-print(f"Vil features: {len(test_feature)}")
-print(f"Vil number: {len(test_num)}")
+# test_feature, test_num=next(iter(vil_training_dataloader))
+# print(f"Vil features: {len(test_feature)}")
+# print(f"Vil number: {len(test_num)}")
 
 
 
 # Model definition
 from torch import nn
+from torcheval.metrics import R2Score
 
 # 1. Simple Linear Model
 class LinearRegression(nn.Module):
@@ -224,67 +258,171 @@ class LinearRegression(nn.Module):
 
 
 # Initialize model
-modelLinearRegression=LinearRegression(input_dim, output_dim)
+modelLinearRegression=LinearRegression(input_dim, output_dim).to(device)
 
 # Initialize loss function
 criterion=nn.MSELoss()
 
 # Initialize optimizer
 optimizer=torch.optim.SGD(modelLinearRegression.parameters(), lr=learning_rate)
-
+optimizer_adam=torch.optim.Adam(modelLinearRegression.parameters(), lr=learning_rate)
 
 # Define train loop and test loop methods
-def train_loop(dataloader, model, loss_fn, optimizer):
+def train_loop(dataloader, model, loss_fn, optimizer, epoch):
     size=len(dataloader.dataset)
+    test_loss=0
+    global data
+    current=0
 
     # Set model to training mode
     model.train()
     for batch, (X,y) in enumerate(dataloader):
         # print(len(X))
         pred=model(X)
+        # print(f"Show the pred: {pred}")
         # for i in range(len(y)):
         #     print(f"pred[{i}]: {pred[i]}, y[{i}]: {y[i]}")
         # print(f"pred.dtype: {pred.dtype}")
         # print(f"y.dtype: {y.dtype}")
+        y=y.reshape(-1,1)
         loss=loss_fn(pred, y)
+        test_loss+=loss.item()
         # print(f"loss.dtype: {loss.dtype}")
+
+
+
+        # Check parameters
+        # for name, param in model.named_parameters():
+        #     if param.requires_grad:
+        #         print(f"Batch {batch}, Name: {name}, Parameter: {param.data}")
+                # 第一批做gradient就變成nan? -> OK! 因為normalize input導致nan產生。已解決
+
 
 
         # Back propagation
         loss.backward()
+
+        # Check grad value
+        # print(f"Parameter gradient: weight: {model.linear.weight.grad}")
+        # print(f"Parameter gradient: bias: {model.linear.bias.grad}")
         optimizer.step()
         optimizer.zero_grad()
 
+
+        r2score=R2Score()
+        r2score.update(pred,y)
+        r2score_val=r2score.compute().item()
+
+
+        if input_dim < batch_size-1:
+            r2score_adj=R2Score(num_regressors=input_dim)
+            r2score_adj.update(pred,y)
+            r2score_adj_val=r2score_adj.compute().item()
+        else:
+            r2score_adj_val=None
+        
         if True:  #batch%10==0:
-            loss, current=loss.item(), (batch+1)*len(X)
-            print(f"loss: {loss:>7f}, [{current:>5d}/{size:>5d}]")
+            loss, processed=loss.item(), len(X)
+            current+=processed
+            print(f"loss: {loss:>7f}, R2-squared: {r2score_val}, Adjusted R2-squared: {r2score_adj_val}, [{current:>5d}/{size:>5d}]")
+
+            
+            data.append(["Train",epoch,batch,current,size,loss,r2score_val,r2score_adj_val])
+
+    test_loss/=len(dataloader)
+    print(f"Avg loss of train data: {test_loss:>8f}")
 
 
-def test_loop(dataloader, model, loss_fn):
+def test_loop(dataloader, model, loss_fn,epoch):
+    global data
+    global data
+
     model.eval()
     # size=len(dataloader.dataset)
     num_batches=len(dataloader)
     test_loss=0
+    current=0
+    size=len(dataloader.dataset)
 
 
     with torch.no_grad():
-        for X,y in dataloader:
+        for batch, (X,y) in enumerate(dataloader):
             pred=model(X)
-            test_loss+=loss_fn(pred, y).item()
+            print(pred)
+
+            y=y.reshape(-1,1)
+            loss=loss_fn(pred,y).item()
+            test_loss+=loss
+            current+=len(X)
+
+            r2score=R2Score()
+            r2score.update(pred,y)
+            r2score_val=r2score.compute().item()
+
+            if input_dim < batch_size-1:
+                r2score_adj=R2Score(num_regressors=input_dim)
+                r2score_adj.update(pred,y)
+                r2score_adj_val=r2score_adj.compute().item()
+            else:
+                r2score_adj_val=None
+
+            data.append(["Test",epoch,batch,current,size,loss,r2score_val,r2score_adj_val])
+            print(f"loss: {loss:>7f}, R2-squared: {r2score_val}, Adjusted R2-squared: {r2score_adj_val}, [{current:>5d}/{size:>5d}]")
 
     test_loss/=num_batches
-    print(f"Avg loss: {test_loss:>8f}")
-
-
-
-# Start training model
-for t in range(epochs):
-    print(f"Epoch {t+1}\n--------------------------------")
-    train_loop(vil_training_dataloader, modelLinearRegression, criterion, optimizer)
-    test_loop(vil_test_dataloader, modelLinearRegression, criterion)
-
-print("Done")
+    print(f"Avg loss of test data: {test_loss:>8f}")
     
+
+
+
+
+
+
+# Export training and testing results
+path = "D:\\Python workspace\\PyTorch\\"+modelLinearRegression.__class__.__name__
+if not os.path.isdir(path):
+    os.mkdir(path)
+    
+
+# with open(os.path.join(path,datetime.now().strftime(r"%Y-%m-%d %H_%M_%S")+"_log.csv"),'w',encoding="utf8", newline="") as f:
+with pd.ExcelWriter(os.path.join(path,datetime.now().strftime(r"%Y-%m-%d %H_%M_%S")+"_log.xlsx")) as writer:
+    # test=["This","is","a","test"]
+    # test2=["Hello","~~"]
+    # writer=csv.writer(f)
+    # writer.writerow(test)
+    # writer.writerow(test2)
+
+    data_info=[]
+    data=[]
+    data_column=["Type","Epoch","Batch","Accumulation","Total","Loss","R-squared score","Adjusted R-squared score"]
+
+    data_info.append(["Datetime",datetime.now().strftime(r"%Y-%m-%d %H:%M:%S")])
+    data_info.append(["Train dataset","df_vil_train"])
+    data_info.append(["Test dataset","df_vil_test"])
+    data_info.append(["Model",modelLinearRegression])
+    data_info.append(["Loss function",criterion])
+    data_info.append(["Optimizer",optimizer])
+    data_info.append(["Epoch number",epochs])
+    data_info.append(["Learning rate",learning_rate])
+    data_info.append(["Batch size",batch_size])
+    # data_info.append(["Type","Epoch","Batch","Accumulation","Total","Loss","R-squared score","Adjusted R-squared score"])
+    pd.DataFrame(data=data_info).to_excel(writer,sheet_name="info", header=None, index=False)
+
+
+    # Start training model
+    for t in range(epochs):
+        print(f"Epoch {t+1}\n--------------------------------")
+        train_loop(vil_training_dataloader, modelLinearRegression, criterion, optimizer,t+1)
+        test_loop(vil_test_dataloader, modelLinearRegression, criterion,t+1)
+
+    
+    pd.DataFrame(data=data, columns=data_column).to_excel(writer, sheet_name="result", index=False)
+    # writer.writerows(data)
+
+
+print("Violation Linear Regression Done!")
+
+
 # Result
 # Simple Linear Regression Model: loss值都是nan! (batch size=10) Why? Underdetermined system?
 # Reference: https://www.collimator.ai/reference-guides/what-is-an-underdetermined-system
@@ -294,69 +432,6 @@ print("Done")
 # Another reason for NaN loss values could be due to the batch size not matching the total number of inputs. You can use a batch size that is a factor of the total number of inputs. If you cannot use a batch size that is a factor of the total number of inputs, you can use the drop_last parameter in the DataLoader class to drop the last batch if it is smaller than the specified batch size.
 
 
-
-
-
-
-
-
-# # 將dataframe中非數字的feature換成0 ~ n的資料 -> 之後轉成one-hot encoded tensor所需
-# # 管轄所站
-# dmv_dict=dict()
-
-# # 路檢聯稽地點
-# location_dict=dict()
-
-# # 違規條款
-# rule_dict=dict()
-
-# # 違規條款來源
-# source_dict=dict()
-
-# # 聯稽車種
-# car_dict=dict()
-
-# # 違規檢查項
-# exam_item_no_dict=dict()
-
-# # 違規檢查子項
-# exam_sub_class_no_dict=dict()
-
-# # 通知臨檢項
-# exam_item_id_dict=dict()
-
-# # 通知臨檢子項
-# exam_sub_item_id_dict=dict()
-
-
-
-# for idx in df_drop.index:
-#     dmv_dict[df_drop.loc[idx, "exam_station_id"]]= dmv_dict.get(df_drop.loc[idx, "exam_station_id"], len(dmv_dict))
-#     location_dict[df_drop.loc[idx, "exam_location_id"]]= location_dict.get(df_drop.loc[idx, "exam_location_id"], len(location_dict))
-#     rule_dict[df_drop.loc[idx, "rule_no"]]= rule_dict.get(df_drop.loc[idx, "rule_no"], len(rule_dict))
-#     source_dict[df_drop.loc[idx, "vil_source_rule"]]= source_dict.get(df_drop.loc[idx, "vil_source_rule"], len(source_dict))
-#     car_dict[df_drop.loc[idx, "car_type"]]= car_dict.get(df_drop.loc[idx, "car_type"], len(car_dict))
-#     exam_item_no_dict[df_drop.loc[idx, "exam_item_no"]]= exam_item_no_dict.get(df_drop.loc[idx, "exam_item_no"], len(exam_item_no_dict))
-#     exam_sub_class_no_dict[df_drop.loc[idx, "exam_sub_class_no"]]= exam_sub_class_no_dict.get(df_drop.loc[idx, "exam_sub_class_no"], len(exam_sub_class_no_dict))
-#     exam_item_id_dict[df_drop.loc[idx, "exam_item_id"]]= exam_item_id_dict.get(df_drop.loc[idx, "exam_item_id"], len(exam_item_id_dict))
-#     exam_sub_item_id_dict[df_drop.loc[idx, "通檢子項目序號"]]= exam_sub_item_id_dict.get(df_drop.loc[idx, "通檢子項目序號"], len(exam_sub_item_id_dict))
-
-
-    # 是否違規項: 0 & 1, 表示有無違規, 0=沒有, 1=有
-
-
-
-# Replace value through dictionary
-# df_drop[["exam_station_id"]]=df_drop[["exam_station_id"]].replace(dmv_dict)
-# df_drop[["exam_location_id"]]=df_drop[["exam_location_id"]].replace(location_dict)
-# df_drop[["rule_no"]]=df_drop[["rule_no"]].replace(rule_dict)
-# df_drop[["vil_source_rule"]]=df_drop[["vil_source_rule"]].replace(source_dict)
-# df_drop[["car_type"]]=df_drop[["car_type"]].replace(car_dict)
-# df_drop[["exam_item_no"]]=df_drop[["exam_item_no"]].replace(exam_item_no_dict)
-# df_drop[["exam_sub_class_no"]]=df_drop[["exam_sub_class_no"]].replace(exam_sub_class_no_dict)
-# df_drop[["exam_item_id"]]=df_drop[["exam_item_id"]].replace(exam_item_id_dict)
-# df_drop[["通檢子項目序號"]]=df_drop[["通檢子項目序號"]].replace(exam_sub_item_id_dict)
-# df_drop[["violation"]]=df_drop[["violation"]].apply(lambda x:1 if x.item()>0 else 0)  #?
-
-# print(df_drop.info())
-# print(df_drop.size())
+# 評估regression model的好壞
+# R squared, Adjusted R squared, loss
+# 參考: https://medium.com/qiubingcheng/%E5%9B%9E%E6%AD%B8%E5%88%86%E6%9E%90-regression-analysis-%E7%9A%84r%E5%B9%B3%E6%96%B9-r-squared-%E8%88%87%E8%AA%BF%E6%95%B4%E5%BE%8Cr%E5%B9%B3%E6%96%B9-adjusted-r-squared-f38ad733bc4e
