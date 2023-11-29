@@ -86,6 +86,32 @@ vil_groupby_feature=[i for i in df_concat.columns if i not in ["violation"]]
 # print(len(vil_groupby_feature))
 df_vil=df_concat.groupby(vil_groupby_feature).sum()  #用來作為違規數預測模型
 df_vil=df_vil.reset_index(names=df_vil.index.names)  # MultiIndex轉成columns
+
+
+
+# Feature selection 評估哪些feature要用到model training
+# Pearson's correlation
+# 參考: https://chih-sheng-huang821.medium.com/%E7%B5%B1%E8%A8%88%E5%AD%B8-%E5%A4%A7%E5%AE%B6%E9%83%BD%E5%96%9C%E6%AD%A1%E5%95%8F%E7%9A%84%E7%B3%BB%E5%88%97-p%E5%80%BC%E6%98%AF%E4%BB%80%E9%BA%BC-2c03dbe8fddf
+# https://pansci.asia/archives/115065
+# https://study.com/academy/lesson/f-distribution-f-test-testing-hypothesis-definitions-example.html
+# https://online.stat.psu.edu/stat501/lesson/6/6.2
+
+from sklearn.feature_selection import SelectKBest
+from sklearn.feature_selection import f_regression
+
+# 留下前n個最高f-statistic的欄位
+SKB=SelectKBest(f_regression,k=150).fit(df_vil[[col for col in df_vil.columns if col != "violation"]],df_vil["violation"])
+# look=sorted(SKB.scores_,reverse=True)
+# # print(look)
+# print(f">0: {len(list(filter(lambda x:x>0,look)))}, >10: {len(list(filter(lambda x:x>10,look)))}, >100: {len(list(filter(lambda x:x>100,look)))}, >1000: {len(list(filter(lambda x:x>1000,look)))}")
+df_vil_X=SKB.transform(df_vil[[col for col in df_vil.columns if col != "violation"]])
+# print(type(df_vil_X))
+
+df_vil_X=pd.DataFrame(df_vil_X)
+df_vil=pd.concat([df_vil_X,df_vil["violation"]],axis=1)
+
+
+
 # print(df_vil.index)
 # df_vil=pd.concat([df_vil.index.to_frame(),df_vil["violation"]], axis=1)
 
@@ -139,10 +165,14 @@ print("Data processing finished.")
 #======================DATA PREPROCESSING FINISHED======================
 
 
+
+
+
 #============================MACHINE LEARNING=========================
 #============================MACHINE LEARNING=========================
 
 import torch 
+from torch import nn
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 
@@ -156,6 +186,7 @@ def label_to_tensor(val):
     return torch.tensor(val).float().to(device)
 
 def feature_to_tensor(df:pd.DataFrame):
+    # return nn.functional.normalize(torch.from_numpy(df.to_numpy()).float(),p=2,dim=0).to(device) normalize features
     return torch.from_numpy(df.to_numpy()).float().to(device)
 
 class MVMDataset(Dataset):
@@ -215,8 +246,9 @@ print("MVMDataset definition completed.")
 input_dim= len(df_vil_train.columns)-1
 output_dim=1
 learning_rate=1e-3
-epochs=2
+epochs=30
 batch_size=60
+momentum=0.9
 
 
 # DataLoader prepare
@@ -237,7 +269,6 @@ vil_test_dataloader=DataLoader(vil_test_dataset, batch_size=len(df_vil_test), dr
 
 
 # Model definition
-from torch import nn
 from torcheval.metrics import R2Score
 
 # 1. Simple Linear Model
@@ -254,7 +285,10 @@ class LinearRegression(nn.Module):
         return output
 
 
-
+# Ridge regression model
+# class RidgeRegression(nn.Module):
+#     def __init__(self, input_dim, output_dim):
+#         pass
 
 
 # Initialize model
@@ -264,7 +298,7 @@ modelLinearRegression=LinearRegression(input_dim, output_dim).to(device)
 criterion=nn.MSELoss()
 
 # Initialize optimizer
-optimizer=torch.optim.SGD(modelLinearRegression.parameters(), lr=learning_rate)
+optimizer=torch.optim.SGD(modelLinearRegression.parameters(), lr=learning_rate,momentum=momentum)
 optimizer_adam=torch.optim.Adam(modelLinearRegression.parameters(), lr=learning_rate)
 
 # Define train loop and test loop methods
@@ -368,6 +402,8 @@ def test_loop(dataloader, model, loss_fn,epoch):
 
             data.append(["Test",epoch,batch,current,size,loss,r2score_val,r2score_adj_val])
             print(f"loss: {loss:>7f}, R2-squared: {r2score_val}, Adjusted R2-squared: {r2score_adj_val}, [{current:>5d}/{size:>5d}]")
+            # print(f"Epoch {epoch} weight: {model.linear.weight}")
+            # print(f"Epoch {epoch} bias: {model.linear.bias}")
 
     test_loss/=num_batches
     print(f"Avg loss of test data: {test_loss:>8f}")
@@ -412,7 +448,7 @@ with pd.ExcelWriter(os.path.join(path,datetime.now().strftime(r"%Y-%m-%d %H_%M_%
     # Start training model
     for t in range(epochs):
         print(f"Epoch {t+1}\n--------------------------------")
-        train_loop(vil_training_dataloader, modelLinearRegression, criterion, optimizer,t+1)
+        train_loop(vil_training_dataloader, modelLinearRegression, criterion, optimizer_adam,t+1)
         test_loop(vil_test_dataloader, modelLinearRegression, criterion,t+1)
 
     
