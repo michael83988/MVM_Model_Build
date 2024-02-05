@@ -82,10 +82,65 @@ df_concat=pd.concat([df_drop.drop(features_to_change, axis=1), df_dummies], axis
 
 
 # 衍伸欄位(違規數量、通知臨檢數量; 作為label項)
+# 違規
 vil_groupby_feature=[i for i in df_concat.columns if i not in ["violation"]] 
-# print(len(vil_groupby_feature))
 df_vil=df_concat.groupby(vil_groupby_feature).sum()  #用來作為違規數預測模型
 df_vil=df_vil.reset_index(names=df_vil.index.names)  # MultiIndex轉成columns
+# print(df_vil["violation"].describe())
+
+# 通知臨檢
+# callback_groupby_feature=[i for i in df_concat.columns if i not in ["need_call_back"]] 
+# df_callback=df_concat.groupby(callback_groupby_feature).sum()  #用來作為違規數預測模型
+# df_callback=df_callback.reset_index(names=df_callback.index.names)  # MultiIndex轉成columns
+# print(df_callback["need_call_back"].describe())
+
+# 呈現數據分布(histogram)
+# print(df_callback["violation"].describe)
+# from matplotlib import pyplot as plt
+# # df_callback["need_call_back"].plot.hist()
+# # plt.figure(figsize=(10,8))
+# plt.figure().set_figwidth(10)
+# _,_,bars=plt.hist(df_callback["need_call_back"],bins=35,edgecolor="black",align='left',color='#fac205')    # sky blue #75bbfd / goldenrod #fac205
+# plt.bar_label(bars)
+# plt.xticks([j for j in range(35)])
+
+# plt.title("Histogram of callback")
+# plt.xlabel("Callback count")
+# plt.ylabel('Count')
+# plt.show()
+# print("Setp")
+
+# Feature selection 評估哪些feature要用到model training
+# Pearson's correlation
+# 參考: https://chih-sheng-huang821.medium.com/%E7%B5%B1%E8%A8%88%E5%AD%B8-%E5%A4%A7%E5%AE%B6%E9%83%BD%E5%96%9C%E6%AD%A1%E5%95%8F%E7%9A%84%E7%B3%BB%E5%88%97-p%E5%80%BC%E6%98%AF%E4%BB%80%E9%BA%BC-2c03dbe8fddf
+# https://pansci.asia/archives/115065
+# https://study.com/academy/lesson/f-distribution-f-test-testing-hypothesis-definitions-example.html
+# https://online.stat.psu.edu/stat501/lesson/6/6.2
+# https://machinelearningmastery.com/feature-selection-for-regression-data/
+# https://chih-sheng-huang821.medium.com/%E7%AC%A8%E8%9B%8B-%E5%95%8F%E9%A1%8C%E5%9C%A8data-2-%E5%BE%9E%E8%A8%8A%E6%81%AF%E7%90%86%E8%AB%96%E4%BE%86%E7%9C%8B%E8%B3%87%E6%96%99%E7%9A%84%E5%BD%B1%E9%9F%BF-9aa2e2b420c6
+# ANOVA分析: https://belleaya.pixnet.net/blog/post/30754486
+# F-statistic: https://courses.lumenlearning.com/introstats1/chapter/the-f-distribution-and-the-f-ratio/
+# 從correlation coefficient 轉換到F-statistic (F-ratio): https://stats.stackexchange.com/questions/501342/f-regression-in-sklearn-how-is-a-correlation-converted-into-an-f-score
+
+# from sklearn.feature_selection import SelectKBest
+# from sklearn.feature_selection import f_regression
+# from sklearn.feature_selection import mutual_info_regression
+
+# 留下前n個最高f-statistic/mutual-info的欄位
+# SKB=SelectKBest(mutual_info_regression,k=6).fit(df_vil[[col for col in df_vil.columns if col != "violation"]],df_vil["violation"])
+# look=sorted(SKB.scores_,reverse=True)
+# # print(look)
+# print(f">=0: {len(list(filter(lambda x:x>=0,look)))}, >0: {len(list(filter(lambda x:x>0,look)))}, >0.1: {len(list(filter(lambda x:x>0.1,look)))}")
+# df_vil_X=SKB.transform(df_vil[[col for col in df_vil.columns if col != "violation"]])
+# # print(type(df_vil_X))
+
+# df_vil_X=pd.DataFrame(df_vil_X)
+# df_vil=pd.concat([df_vil_X,df_vil["violation"]],axis=1)
+
+
+
+
+
 # print(df_vil.index)
 # df_vil=pd.concat([df_vil.index.to_frame(),df_vil["violation"]], axis=1)
 
@@ -129,6 +184,8 @@ df_vil_train=df_vil_train.reset_index(drop=True)
 # df_callback_train=df_callback.drop(index=df_callback_test.index, axis=0)
 # df_callback_test.reset_index(drop=True)
 # df_callback_train.reset_index(drop=True)
+# df_vil_describe=df_vil.describe()
+# print(df_vil.describe())
 print("Data processing finished.")
 
 
@@ -139,10 +196,14 @@ print("Data processing finished.")
 #======================DATA PREPROCESSING FINISHED======================
 
 
+
+
+
 #============================MACHINE LEARNING=========================
 #============================MACHINE LEARNING=========================
 
 import torch 
+from torch import nn
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 
@@ -156,6 +217,7 @@ def label_to_tensor(val):
     return torch.tensor(val).float().to(device)
 
 def feature_to_tensor(df:pd.DataFrame):
+    # return nn.functional.normalize(torch.from_numpy(df.to_numpy()).float(),p=2,dim=0).to(device) normalize features
     return torch.from_numpy(df.to_numpy()).float().to(device)
 
 class MVMDataset(Dataset):
@@ -215,15 +277,16 @@ print("MVMDataset definition completed.")
 input_dim= len(df_vil_train.columns)-1
 output_dim=1
 learning_rate=1e-3
-epochs=2
+epochs=30
 batch_size=60
+momentum=0.9
 
 
 # DataLoader prepare
 vil_training_dataset=MVMDataset(df_vil_train,label_column="violation", transform= feature_to_tensor, target_transform=label_to_tensor)
 vil_training_dataloader=DataLoader(vil_training_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
 vil_test_dataset=MVMDataset(df_vil_test, "violation", feature_to_tensor, label_to_tensor)
-vil_test_dataloader=DataLoader(vil_test_dataset, batch_size=len(df_vil_test), drop_last=True, shuffle=True)
+vil_test_dataloader=DataLoader(vil_test_dataset, batch_size=batch_size, drop_last=True, shuffle=True)
 
 # for idx, (features, violation) in enumerate(vil_training_dataset):
 #     print(f"idx: {idx}, features: {features}, violation: {violation}")
@@ -237,7 +300,6 @@ vil_test_dataloader=DataLoader(vil_test_dataset, batch_size=len(df_vil_test), dr
 
 
 # Model definition
-from torch import nn
 from torcheval.metrics import R2Score
 
 # 1. Simple Linear Model
@@ -254,38 +316,229 @@ class LinearRegression(nn.Module):
         return output
 
 
+# 2. Polynomial regression model
+class PolynomialRegression(nn.Module):
+    def __init__(self, input_dim, output_dim, degree):
+        super().__init__()
+        self.degree=degree
+        self.linear=nn.Linear(input_dim*degree,output_dim)
 
+    def _polynomial_feature(self,x):
+        return torch.cat([torch.pow(x,n) for n in range(1,self.degree+1)],1)
+    
+    def forward(self,x):
+        return self.linear(self._polynomial_feature(x))
+
+# 3. Linear ReLU stack (hidden dimension + stack number can modify)
+class LinearReLUStack(nn.Module):
+    def __init__(self,input_dim,output_dim,hidden_dim,stack_num):  # Linear-ReLU 堆疊次數
+        super().__init__()
+        self.start=nn.Linear(input_dim,hidden_dim)
+        self.linear_relu_stack=nn.Sequential(
+            nn.Linear(hidden_dim,hidden_dim),
+            nn.ReLU()
+        )
+        self.end=nn.Linear(hidden_dim,output_dim)
+        self.stack=nn.ModuleList([self.linear_relu_stack for _ in range(stack_num)])
+        self.stack=self.stack.append(self.end)
+        self.stack.insert(0,self.start)
+
+    def forward(self,x):
+        for module in self.stack:
+            x=module(x)
+
+        return x
+
+
+# 4. Linear-X stack (hidden dimension + stack number modify)
+class LinearXStack(nn.Module):
+    def __init__(self,input_dim,output_dim,hidden_dim,stack_num):  
+        super().__init__()
+        self.start=nn.Linear(input_dim,hidden_dim)
+        # self.start=nn.Conv1d(in_channels=1,out_channels=1,kernel_size=kernel_size)  # batch size變成cin? 怪怪的
+
+        # print(f"Test: {self.start.padding}")
+        # Lout=((input_dim+2*self.start.padding[0]-self.start.dilation[0]*(kernel_size-1)-1)/self.start.stride[0])+1
+        # Lout=int(Lout)
+        # print(f"{Lout}")
+        self.linear_x_stack=nn.Sequential(
+            nn.Linear(hidden_dim,hidden_dim),
+            nn.Tanh()
+        )
+        self.end=nn.Linear(hidden_dim,output_dim)
+        self.stack=nn.ModuleList([self.linear_x_stack for _ in range(stack_num)])
+        self.stack=self.stack.append(self.end)
+        self.stack.insert(0,self.start)
+
+    def forward(self,x):
+        for module in self.stack:
+            x=module(x)
+
+        return x
+
+
+# 5. Poisson Regression model
+class PoissonRegression(nn.Module):
+    def __init__(self,input_dim,output_dim):
+        super().__init__()
+        self.linear=nn.Linear(input_dim,output_dim)
+        # self.relu=nn.ReLU()
+        
+    def forward(self,x):
+        return torch.poisson(torch.exp(self.linear(x)))
+
+
+# 6. Negative binomial regression (NB(p) model)
+# import numpy as np
+alpha_1=torch.rand(1,requires_grad=True).to(device)
+alpha_1_list=[]
+# alpha=torch.rand(1,requires_grad=True).to(device)
+alpha=torch.tensor(-0.3173,requires_grad=True)
+
+def NB_pdf(y:torch.Tensor,rate:torch.Tensor,alpha_1:torch.Tensor):
+    return torch.exp(torch.lgamma(y+alpha_1))/(torch.exp(torch.lgamma(y+1))*torch.exp(torch.lgamma(alpha_1)))*torch.pow((alpha_1/(alpha_1+rate)),alpha_1)*torch.pow((rate/(alpha_1+rate)),y)
+
+def NB_NLL(rate,y):
+    global alpha_1
+    return -torch.sum(torch.log(NB_pdf(y,rate,alpha_1)))
+
+def rejection_sampling(pdf,rate:torch.Tensor):
+    # global alpha_1
+    global alpha,alpha_1_list
+    result=torch.empty(rate.shape).to(device)
+    
+
+    for idx in range(result.shape[0]):
+        # print(f"mean: {mean[idx]}, sigma: {sigma[idx]}")
+        # print(f"rate: {rate[idx]}")
+        lock=0
+        while True:
+            lock+=1
+            # sample_x=torch.normal(mean[idx],sigma[idx]).int().to(device)  # ?
+            sample_x=torch.randint(0,50,(1,))  # uniform distribution from 0 to 49
+            sample_y=torch.rand(1).to(device)
+            # print(f"sample_x.shape: {sample_x.shape}")
+            # print(f"sample_y.shape: {sample_y.shape}")
+            # print(f"x: {sample_x}")
+            # print(f"y: {sample_y}")
+
+            threshold=pdf(sample_x,rate[idx],alpha)
+            # print(f"threshold: {threshold}")
+            # print(f"threshold.shape: {threshold.shape}")
+            if sample_y <= threshold:
+                result[idx]=sample_x
+                break
+            
+            if lock>=1000:
+                # print(f"mean: {mean[idx]}, sigma: {sigma[idx]}, threshold: {threshold}")
+                # print(alpha_1_list)
+                # file=pd.Series(alpha_1_list)
+                # file.to_csv("alpha_change.csv",index=False)
+                raise Exception("Infinite loop!")
+    return result
+
+class NegativeBinomial(nn.Module):
+    def __init__(self,input_dim,output_dim): # p: var=mean + a*mean^p
+        super().__init__()  
+        self.linear=nn.Linear(input_dim,output_dim)
+        # self.relu=nn.ReLU()
+        # self.p=p
+        # self.alpha_1=torch.rand(1,requires_grad=True)
+        # self.mean=None
+
+    def forward(self,x):
+        # global alpha_1
+
+        # mean=torch.exp(self.linear(x))
+        # print(f"mean.shape: {mean.shape}")
+        # sigma=torch.pow(self.relu(mean+torch.pow(alpha_1,-1)*torch.pow(mean,self.p)),0.5)    
+        # print(f"sigma.shape: {sigma.shape}")
+
+        # return rejection_sampling(NB_pdf,mean,sigma)  # 返回的應該要是一個rate! 非取樣的結果!
+        return torch.exp(self.linear(x))
+
+
+# 7. Generalized Poisson regression (GP-1)
+def GP1_pdf(y:torch.Tensor,rate:torch.Tensor,alpha:torch.Tensor):
+    return rate*torch.exp(-rate-alpha*y)*torch.pow(rate+alpha*y,y-1)/torch.exp(torch.lgamma(y+1))
+
+def GP1_NLL(pred,y):
+    global alpha
+    return -torch.sum(torch.log(GP1_pdf(y,pred,alpha)))
+
+class GeneralizedPoisson1(nn.Module):
+    def __init__(self,input_dim,output_dim):
+        super().__init__()
+        self.linear=nn.Linear(input_dim,output_dim)
+        # self.relu=nn.ReLU()
+
+    def forward(self,x):
+        global alpha
+        # lamb=torch.exp(self.linear(x))
+        # mean=lamb/(1-alpha)
+        # sigma=torch.pow(self.relu(lamb/torch.pow(1-alpha,3)),0.5)
+        # return rejection_sampling(GP1_pdf,mean,sigma,lamb)
+        return torch.exp(self.linear(x))
+
+
+# 8. Zero-inflated Poisson Regression
+class ZeroInflatedPoisson(nn.Module):
+    def __init__(self,input_dim,output_dim):
+        super().__init__()
 
 
 # Initialize model
-modelLinearRegression=LinearRegression(input_dim, output_dim).to(device)
+# modelLinearRegression=LinearRegression(input_dim, output_dim).to(device)
+# modelPolynomialRegression=PolynomialRegression(input_dim,output_dim,degree=5).to(device)
+# modelLinearReLUStack=LinearReLUStack(input_dim,output_dim,hidden_dim=450,stack_num=4)
+# modelLinearXStack=LinearXStack(input_dim,output_dim,450,stack_num=1)
+# modelPoissonRegression=PoissonRegression(input_dim,output_dim).to(device)
+# modelNegativeBinomial=NegativeBinomial(input_dim,output_dim)
+modelGP1=GeneralizedPoisson1(input_dim,output_dim)
+
 
 # Initialize loss function
-criterion=nn.MSELoss()
+# criterion=nn.MSELoss()
+# criterion=nn.PoissonNLLLoss()
+# criterion=NB_NLL
+criterion=GP1_NLL
 
 # Initialize optimizer
-optimizer=torch.optim.SGD(modelLinearRegression.parameters(), lr=learning_rate)
-optimizer_adam=torch.optim.Adam(modelLinearRegression.parameters(), lr=learning_rate)
+# optimizer=torch.optim.SGD(modelPolynomialRegression.parameters(), lr=learning_rate,momentum=momentum)
+params=[it for it in modelGP1.parameters()]
+# print(len(params))
+# params.append(alpha_1)
+params.append(alpha)
+# print(len(params))
+# def chain(iterable):
+#     for it in iterable:
+#         yield it
+
+param_generator=(it for it in (params))        
+# print(type(param_generator))
+optimizer_adam=torch.optim.Adam(param_generator, lr=learning_rate)
 
 # Define train loop and test loop methods
 def train_loop(dataloader, model, loss_fn, optimizer, epoch):
     size=len(dataloader.dataset)
     test_loss=0
-    global data
+    global data,alpha,alpha_1_list,alpha_1
+    
     current=0
 
     # Set model to training mode
     model.train()
     for batch, (X,y) in enumerate(dataloader):
         # print(len(X))
-        pred=model(X)
+        # pred=model(X)
+        rate=model(X)
         # print(f"Show the pred: {pred}")
         # for i in range(len(y)):
         #     print(f"pred[{i}]: {pred[i]}, y[{i}]: {y[i]}")
         # print(f"pred.dtype: {pred.dtype}")
         # print(f"y.dtype: {y.dtype}")
         y=y.reshape(-1,1)
-        loss=loss_fn(pred, y)
+        loss=loss_fn(rate, y)
         test_loss+=loss.item()
         # print(f"loss.dtype: {loss.dtype}")
 
@@ -310,7 +563,14 @@ def train_loop(dataloader, model, loss_fn, optimizer, epoch):
 
 
         r2score=R2Score()
+        # r2score.update(pred,y)
+        # mean=rate
+        # mean=rate/(1-alpha)
+        # sigma=torch.pow(mean+torch.pow(alpha_1,-1)*torch.pow(mean,2),0.5)
+        # sigma=torch.pow(rate/torch.pow(1-alpha,3),0.5)
+        pred=rejection_sampling(GP1_pdf,rate)
         r2score.update(pred,y)
+
         r2score_val=r2score.compute().item()
 
 
@@ -325,6 +585,10 @@ def train_loop(dataloader, model, loss_fn, optimizer, epoch):
             loss, processed=loss.item(), len(X)
             current+=processed
             print(f"loss: {loss:>7f}, R2-squared: {r2score_val}, Adjusted R2-squared: {r2score_adj_val}, [{current:>5d}/{size:>5d}]")
+            print(f"alpha: {alpha}")
+            # print(f"lambda: {}")
+            alpha_1_list.append(alpha.item())
+
 
             
             data.append(["Train",epoch,batch,current,size,loss,r2score_val,r2score_adj_val])
@@ -334,8 +598,8 @@ def train_loop(dataloader, model, loss_fn, optimizer, epoch):
 
 
 def test_loop(dataloader, model, loss_fn,epoch):
-    global data
-    global data
+    global data,alpha_1,alpha
+    # global data
 
     model.eval()
     # size=len(dataloader.dataset)
@@ -347,15 +611,25 @@ def test_loop(dataloader, model, loss_fn,epoch):
 
     with torch.no_grad():
         for batch, (X,y) in enumerate(dataloader):
-            pred=model(X)
-            print(pred)
+            # pred=model(X)
+            rate=model(X)
+            # print(rate)
 
             y=y.reshape(-1,1)
-            loss=loss_fn(pred,y).item()
+            loss=loss_fn(rate,y).item()
             test_loss+=loss
             current+=len(X)
 
             r2score=R2Score()
+            # r2score.update(pred,y)
+            
+            # mean=rate
+            # mean=rate/(1-alpha)
+            # sigma=torch.pow(mean+torch.pow(alpha_1,-1)*torch.pow(mean,2),0.5)
+            # sigma=torch.pow(rate/torch.pow(1-alpha,3),0.5)
+            pred=rejection_sampling(GP1_pdf,rate)
+            # print(pred)
+
             r2score.update(pred,y)
             r2score_val=r2score.compute().item()
 
@@ -368,6 +642,8 @@ def test_loop(dataloader, model, loss_fn,epoch):
 
             data.append(["Test",epoch,batch,current,size,loss,r2score_val,r2score_adj_val])
             print(f"loss: {loss:>7f}, R2-squared: {r2score_val}, Adjusted R2-squared: {r2score_adj_val}, [{current:>5d}/{size:>5d}]")
+            # print(f"Epoch {epoch} weight: {model.linear.weight}")
+            # print(f"Epoch {epoch} bias: {model.linear.bias}")
 
     test_loss/=num_batches
     print(f"Avg loss of test data: {test_loss:>8f}")
@@ -379,7 +655,7 @@ def test_loop(dataloader, model, loss_fn,epoch):
 
 
 # Export training and testing results
-path = "D:\\Python workspace\\PyTorch\\"+modelLinearRegression.__class__.__name__
+path = "D:\\Python workspace\\PyTorch\\"+modelGP1.__class__.__name__
 if not os.path.isdir(path):
     os.mkdir(path)
     
@@ -399,9 +675,9 @@ with pd.ExcelWriter(os.path.join(path,datetime.now().strftime(r"%Y-%m-%d %H_%M_%
     data_info.append(["Datetime",datetime.now().strftime(r"%Y-%m-%d %H:%M:%S")])
     data_info.append(["Train dataset","df_vil_train"])
     data_info.append(["Test dataset","df_vil_test"])
-    data_info.append(["Model",modelLinearRegression])
+    data_info.append(["Model",modelGP1])
     data_info.append(["Loss function",criterion])
-    data_info.append(["Optimizer",optimizer])
+    data_info.append(["Optimizer",optimizer_adam])
     data_info.append(["Epoch number",epochs])
     data_info.append(["Learning rate",learning_rate])
     data_info.append(["Batch size",batch_size])
@@ -412,15 +688,15 @@ with pd.ExcelWriter(os.path.join(path,datetime.now().strftime(r"%Y-%m-%d %H_%M_%
     # Start training model
     for t in range(epochs):
         print(f"Epoch {t+1}\n--------------------------------")
-        train_loop(vil_training_dataloader, modelLinearRegression, criterion, optimizer,t+1)
-        test_loop(vil_test_dataloader, modelLinearRegression, criterion,t+1)
+        train_loop(vil_training_dataloader, modelGP1, criterion, optimizer_adam,t+1)
+        test_loop(vil_test_dataloader, modelGP1, criterion,t+1)
 
     
     pd.DataFrame(data=data, columns=data_column).to_excel(writer, sheet_name="result", index=False)
     # writer.writerows(data)
 
 
-print("Violation Linear Regression Done!")
+print("Violation Regression Done!")
 
 
 # Result
@@ -430,8 +706,22 @@ print("Violation Linear Regression Done!")
 # A NaN loss value in PyTorch linear regression model training can be caused by several reasons. One of the most common reasons is that the values in the dataset are too large or too small. This can cause the gradients to become too large or too small, which can lead to numerical instability and NaN values.
 # To fix this issue, you can try normalizing the input data. You can do this by subtracting the mean and dividing by the standard deviation of the input data. Here is an example of how you can normalize the input data:
 # Another reason for NaN loss values could be due to the batch size not matching the total number of inputs. You can use a batch size that is a factor of the total number of inputs. If you cannot use a batch size that is a factor of the total number of inputs, you can use the drop_last parameter in the DataLoader class to drop the last batch if it is smaller than the specified batch size.
-
+# Information gain: https://machinelearningmastery.com/information-gain-and-mutual-information/
+# Activation function選擇: 選gradient比較大的! https://towardsdatascience.com/activation-functions-neural-networks-1cbd9f8d91d6
+# Perceptron: 前端的神經元如何將輸入做總和(線性相加or其他, ex: convolution): https://medium.com/jameslearningnote/%E8%B3%87%E6%96%99%E5%88%86%E6%9E%90-%E6%A9%9F%E5%99%A8%E5%AD%B8%E7%BF%92-%E7%AC%AC3-2%E8%AC%9B-%E7%B7%9A%E6%80%A7%E5%88%86%E9%A1%9E-%E6%84%9F%E7%9F%A5%E5%99%A8-perceptron-%E4%BB%8B%E7%B4%B9-84d8b809f866
 
 # 評估regression model的好壞
 # R squared, Adjusted R squared, loss
 # 參考: https://medium.com/qiubingcheng/%E5%9B%9E%E6%AD%B8%E5%88%86%E6%9E%90-regression-analysis-%E7%9A%84r%E5%B9%B3%E6%96%B9-r-squared-%E8%88%87%E8%AA%BF%E6%95%B4%E5%BE%8Cr%E5%B9%B3%E6%96%B9-adjusted-r-squared-f38ad733bc4e
+
+
+# 其他模型
+# Deep Neural Network: https://towardsdatascience.com/deep-neural-networks-for-regression-problems-81321897ca33
+# Zero Inflated Poisson Regression Model: https://timeseriesreasoning.com/contents/zero-inflated-poisson-regression-model/
+# Poission Regression Model: https://timeseriesreasoning.com/contents/poisson-regression-model/
+# Negative binomial regression: https://timeseriesreasoning.com/contents/negative-binomial-regression-model/
+# Negative binomial regression: https://www.ncss.com/wp-content/themes/ncss/pdf/Procedures/NCSS/Negative_Binomial_Regression.pdf
+# Negative binomial regression: https://github.com/meaneych/PyTorch_CountDistribution_Examples/blob/main/NegBin1_PyTorch_AutoGrad.ipynb
+# Negative binomial regression: https://www.karlin.mff.cuni.cz/~pesta/NMFM404/NB.html
+
+# GP1 model: https://www.sciencedirect.com/science/article/pii/S2213398421000828
